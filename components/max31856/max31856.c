@@ -35,17 +35,18 @@ static float
 max31856_19bit_to_float (uint8_t upper_byte, uint8_t middle_byte,
                          uint8_t lower_byte)
 {
-  // Note the sign, then remove it
-  bool sign = upper_byte >> 7;
-  upper_byte &= 0x7f;
+  // Last 5 bits are not used, and msb is the sign
+  int32_t value = ((upper_byte & 0x7f) << 11) + (middle_byte << 3) + (lower_byte >> 5);
+  
+  // Handle the sign
+  if (upper_byte & 0x80)
+    {
+      value -= 262144; // 2^18
+    }
 
-  uint32_t value = (upper_byte << 16) + (middle_byte << 8) + lower_byte;
-
-  // Last 5 bits are not used, and first bit is 1/2^7.
-  float temperature = (value >> 5) / 128.0;
-
-  // Add the sign, and return the value
-  return temperature * (sign ? -1 : 1);
+  // first bit is 1/2^7, but interpreted as 2^0. Scale appropriately.
+  float temperature = value / 128.0;
+  return temperature;
 }
 
 /**
