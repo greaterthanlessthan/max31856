@@ -37,7 +37,7 @@ app_main (void)
   };
 
   // Device cfg
-  spi_device_interface_config_t devcfg = max31856_device_interface (DRDY_PIN);
+  spi_device_interface_config_t devcfg = max31856_device_interface (PIN_CS);
   static spi_device_handle_t max_spi;
 
   // Initialize the SPI bus
@@ -45,6 +45,7 @@ app_main (void)
   ESP_ERROR_CHECK (ret);
   ret = spi_bus_add_device (MAX_SPI_HOST, &devcfg, &max_spi);
   ESP_ERROR_CHECK (ret);
+
   // install gpio isr service
   ret = gpio_install_isr_service (GPIO_INTR_NEGEDGE);
   ESP_ERROR_CHECK (ret);
@@ -53,15 +54,10 @@ app_main (void)
   max31856_start_drdy_pin_task (DRDY_PIN, &max_spi);
 
   float temperature = 0.0;
-  uint8_t *r;
 
   while (true)
     {
       xQueueReceive (MAX31856_TEMP_READ_QUEUE, &temperature, portMAX_DELAY);
-      // Set conversion to automatic
-      r = max31856_read_register (&max_spi, RW_REG_CR0, 1);
-      *r = *r | CR0_CMODE;
-      max31856_write_register (&max_spi, RW_REG_CR0, r, 1);
 
       printf ("Temperature: %.4f\n\n", temperature);
 
