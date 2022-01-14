@@ -133,6 +133,7 @@ void max31856_log_faults (uint8_t fault_reg);
  * @brief triggers a conversion and then reads the temperature
  * Conversion takes up to 169ms to complete, so it's recommended to setup a
  * task/queue if calling this often or simply use max31856_start_drdy_pin_task
+ * as this function blocks for that time to get the correct reading
  *
  * @param spi_handle pointers to the device handle
  *
