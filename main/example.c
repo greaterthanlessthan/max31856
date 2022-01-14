@@ -57,10 +57,10 @@ app_main (void)
 
   while (true)
     {
-      xQueueReceive (MAX31856_TEMP_READ_QUEUE, &temperature, portMAX_DELAY);
+      xQueueReceive (MAX31856_TEMP_READ_QUEUE, &temperature, 0);
 
-      printf ("Temperature: %.4f\n\n", temperature);
+      printf ("Temperature: %.4f °C\n", temperature);
 
-      vTaskDelay (pdMS_TO_TICKS (2000));
+      vTaskDelay (pdMS_TO_TICKS (1000));
     }
 }
