@@ -35,18 +35,6 @@
 #define CR1_AVGSEL2 1 << 6
 #define CR1_AVGSEL1 1 << 5
 #define CR1_AVGSEL0 1 << 4
-#define CR1_TCTYPE3 1 << 3
-#define CR1_TCTYPE2 1 << 2
-#define CR1_TCTYPE1 1 << 1
-#define CR1_TCTYPE0 1 << 0
-
-// Fault mask cfg bits
-#define FLT_MASK_CJH 1 << 5
-#define FLT_MASK_CJL 1 << 4
-#define FLT_MASK_TCH 1 << 3
-#define FLT_MASK_TCL 1 << 2
-#define FLT_MASK_OVUV 1 << 1
-#define FL_TMASK_OPN 1 << 0
 
 // Thermocouple cfg
 #define TYPE_B 0b0000
@@ -57,6 +45,14 @@
 #define TYPE_R 0b0101
 #define TYPE_S 0b0110
 #define TYPE_T 0b0111
+
+// Fault mask cfg bits
+#define FLT_MASK_CJH 1 << 5
+#define FLT_MASK_CJL 1 << 4
+#define FLT_MASK_TCH 1 << 3
+#define FLT_MASK_TCL 1 << 2
+#define FLT_MASK_OVUV 1 << 1
+#define FL_TMASK_OPN 1 << 0
 
 // Fault bits
 #define FAULT_CJRANGE 1 << 7
@@ -126,3 +122,29 @@ void max31856_start_drdy_pin_task (uint32_t drdy_pin,
  * @return spi_device_interface_config_t
  */
 spi_device_interface_config_t max31856_device_interface (uint8_t cs_pin);
+
+/**
+ * @brief logs faults from the chip
+ *
+ */
+void max31856_log_faults (uint8_t fault_reg);
+
+/**
+ * @brief triggers a conversion and then reads the temperature
+ * Conversion takes up to 169ms to complete, so it's recommended to setup a
+ * task/queue if calling this often or simply use max31856_start_drdy_pin_task
+ *
+ * @param spi_handle pointers to the device handle
+ *
+ * @return temperature reading
+ */
+float max31856_oneshot_then_read_temperature (spi_device_handle_t *spi_handle);
+
+/**
+ * @brief reads the cold junction (internal chip temperature by default)
+ *
+ * @param spi_handle pointers to the device handle
+ *
+ * @return cold junction temperature reading
+ */
+float max31856_read_cj_temperature (spi_device_handle_t *spi_handle);

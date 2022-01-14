@@ -1,7 +1,5 @@
-
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -54,12 +52,32 @@ app_main (void)
   max31856_start_drdy_pin_task (DRDY_PIN, &max_spi);
 
   float temperature = 0.0;
+  uint8_t fault = 255;
+  uint8_t *r;
+
+  // Set open wire detection
+  r = max31856_read_register (&max_spi, RW_REG_CR0, 1);
+  *r = *r | CR0_OCFAULT0;
+  max31856_write_register (&max_spi, RW_REG_CR0, r, 1);
+
+  // Set TC to type K
+  r = max31856_read_register (&max_spi, RW_REG_CR1, 1);
+  *r = *r | TYPE_K;
+  max31856_write_register (&max_spi, RW_REG_CR1, r, 1);
+
+  // automatic conversion is set in DRDY task
 
   while (true)
     {
       xQueueReceive (MAX31856_TEMP_READ_QUEUE, &temperature, 0);
+      xQueueReceive (MAX31856_FAULT_QUEUE, &fault, 0);
 
       printf ("Temperature: %.4f °C\n", temperature);
+
+      if (fault != 0)
+        {
+          printf ("Fault! %.02x\n", fault);
+        }
 
       vTaskDelay (pdMS_TO_TICKS (1000));
     }

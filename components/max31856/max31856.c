@@ -1,7 +1,5 @@
-
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -20,12 +18,10 @@
             __LINE__);
 
 const char *TAG = "MAX31856";
-static xQueueHandle DRDY_EVT_QUEUE = NULL;
-extern xQueueHandle MAX31856_TEMP_READ_QUEUE = NULL;
 
-/**
- * Other functions
- */
+static xQueueHandle DRDY_EVT_QUEUE = NULL;
+xQueueHandle MAX31856_TEMP_READ_QUEUE = NULL;
+xQueueHandle MAX31856_FAULT_QUEUE = NULL;
 
 /**
  * @brief Converts a 19-bit register into a float
@@ -36,8 +32,9 @@ max31856_19bit_to_float (uint8_t upper_byte, uint8_t middle_byte,
                          uint8_t lower_byte)
 {
   // Last 5 bits are not used, and msb is the sign
-  int32_t value = ((upper_byte & 0x7f) << 11) + (middle_byte << 3) + (lower_byte >> 5);
-  
+  int32_t value
+      = ((upper_byte & 0x7f) << 11) + (middle_byte << 3) + (lower_byte >> 5);
+
   // Handle the sign
   if (upper_byte & 0x80)
     {
@@ -47,6 +44,90 @@ max31856_19bit_to_float (uint8_t upper_byte, uint8_t middle_byte,
   // first bit is 1/2^7, but interpreted as 2^0. Scale appropriately.
   float temperature = value / 128.0;
   return temperature;
+}
+
+/**
+ * @brief Converts a 14-bit register into a float
+ *  Used for converting cold junction temperatue registers into float
+ */
+static float
+max31856_14bit_to_float (uint8_t upper_byte, uint8_t lower_byte)
+{
+  // Last 2 bits are not used, and msb is the sign
+  int16_t value = ((upper_byte & 0x7f) << 6) + (lower_byte >> 2);
+
+  // Handle the sign
+  if (upper_byte & 0x80)
+    {
+      value -= 8192; // 2^13
+    }
+
+  // first bit is 1/2^6, but interpreted as 2^0. Scale appropriately.
+  float temperature = value / 64.0;
+  return temperature;
+}
+
+void
+max31856_log_faults (uint8_t fault_reg)
+{
+  if (fault_reg == 0)
+    {
+      return;
+    }
+
+  if (fault_reg & FAULT_CJRANGE)
+    {
+      ESP_LOGE (
+          TAG,
+          "CJRANGE The Cold-Junction temperature is outside of the normal "
+          "operating range.");
+    }
+
+  if (fault_reg & FAULT_TCRANGE)
+    {
+      ESP_LOGE (
+          TAG,
+          "TCRANGE The Thermocouple Hot Junction temperature is outside of "
+          "the normal operating range.");
+    }
+
+  if (fault_reg & FAULT_CJHIGH)
+    {
+      ESP_LOGE (TAG, "CJHIGH The Cold-Junction temperature is higher than the "
+                     "cold-junction temperature high threshold.");
+    }
+
+  if (fault_reg & FAULT_CJLOW)
+    {
+      ESP_LOGE (TAG, "CJLOW The Cold-Junction temperature is lower than the "
+                     "cold-junction temperature low threshold.");
+    }
+
+  if (fault_reg & FAULT_TCHIGH)
+    {
+      ESP_LOGE (TAG, "TCHIGH The Thermocouple Temperature is higher than the "
+                     "thermocouple temperature high threshold.");
+    }
+
+  if (fault_reg & FAULT_TCLOW)
+    {
+      ESP_LOGE (
+          TAG, "TCLOW Thermocouple temperature is lower than the thermocouple "
+               "temperature low threshold.");
+    }
+
+  if (fault_reg & FAULT_OVUV)
+    {
+      ESP_LOGE (TAG,
+                "OVUV The input voltage is negative or greater than VDD.");
+    }
+
+  if (fault_reg & FAULT_OPEN)
+    {
+      ESP_LOGE (TAG,
+                "OPEN An open circuit such as broken thermocouple wires has "
+                "been detected.");
+    }
 }
 
 /**
@@ -145,6 +226,30 @@ max31856_read_temperature (spi_device_handle_t *spi_handle)
   return max31856_19bit_to_float (*t, *(t + 1), *(t + 2));
 }
 
+float
+max31856_oneshot_then_read_temperature (spi_device_handle_t *spi_handle)
+{
+  uint8_t *r;
+
+  // Set the oneshot bit
+  r = max31856_read_register (spi_handle, RW_REG_CR0, 1);
+  *r = *r | CR0_1SHOT;
+  max31856_write_register (spi_handle, RW_REG_CR0, r, 1);
+
+  // Wait for converstion to complete
+  vTaskDelay (pdMS_TO_TICKS (180));
+
+  return max31856_read_temperature (spi_handle);
+}
+
+float
+max31856_read_cj_temperature (spi_device_handle_t *spi_handle)
+{
+  static uint8_t *t;
+  t = max31856_read_register (spi_handle, RW_REG_CJTH, 2);
+  return max31856_14bit_to_float (*t, *(t + 1));
+}
+
 /**
  * Queue and Task Functions
  */
@@ -159,51 +264,57 @@ drdy_isr_handler (void *pin)
 static void
 read_temperature_task (void *spi_handle)
 {
+  uint8_t no_temp_ct = 0;
+  uint8_t *r;
   uint32_t io_num;
   float temperature;
   BaseType_t queue_ret;
-  uint8_t no_temp_ct = 0;
+  spi_handle = (spi_device_handle_t *)spi_handle;
 
   // Queue to store temperature values
-  // Size of 1, since most recent temperature best for control
   MAX31856_TEMP_READ_QUEUE = xQueueCreate (1, sizeof (float));
   if (MAX31856_TEMP_READ_QUEUE == NULL)
     {
       LOG_MEM_ALLOC_ERROR
     }
 
+  MAX31856_FAULT_QUEUE = xQueueCreate (1, sizeof (uint8_t));
+  if (MAX31856_FAULT_QUEUE == NULL)
+    {
+      LOG_MEM_ALLOC_ERROR
+    }
+
   // Set conversion to automatic
-  uint8_t *r = max31856_read_register ((spi_device_handle_t *)spi_handle,
-                                       RW_REG_CR0, 1);
+  r = max31856_read_register (spi_handle, RW_REG_CR0, 1);
   *r = *r | CR0_CMODE;
-  max31856_write_register ((spi_device_handle_t *)spi_handle, RW_REG_CR0, r,
-                           1);
+  max31856_write_register (spi_handle, RW_REG_CR0, r, 1);
 
   for (;;)
     {
       // automatic conversion happens about every 100ms
       queue_ret = xQueueReceive (DRDY_EVT_QUEUE, &io_num, pdMS_TO_TICKS (150));
-
-      // Read the temperature
-      temperature
-          = max31856_read_temperature ((spi_device_handle_t *)spi_handle);
-
-      // Reset the queue before sending
-      // This ensures up to date temperature data is always used
-      xQueueReset (MAX31856_TEMP_READ_QUEUE);
-      xQueueSend (MAX31856_TEMP_READ_QUEUE, &temperature, portMAX_DELAY);
-
-      ESP_LOGD (TAG, "Sent temperature of %.4f to MAX31856_TEMP_READ_QUEUE",
-                temperature);
-
-      // Notify if not getting new value
+      // Notify if not getting signal from DRDY
       no_temp_ct = (queue_ret == pdTRUE) ? 0 : no_temp_ct + 1;
-
       if (no_temp_ct > 5)
         {
           ESP_LOGE (TAG, "Not getting new temperature value from MAX31856. "
                          "Check CMODE or interrupt set up for pin DRDY.");
         }
+
+      // Read the temperature
+      temperature = max31856_read_temperature (spi_handle);
+      xQueueOverwrite (MAX31856_TEMP_READ_QUEUE, &temperature);
+      ESP_LOGD (TAG, "Sent temperature of %.4f to MAX31856_TEMP_READ_QUEUE",
+                temperature);
+
+      // Read fault register and report that back
+      r = max31856_read_register (spi_handle, R_REG_SR, 1);
+      xQueueOverwrite (MAX31856_FAULT_QUEUE, r);
+
+      max31856_log_faults (*r);
+
+      // ESP_LOGD (TAG, "Temp read task has %d words remaining in stack\n",
+      //          uxTaskGetStackHighWaterMark (NULL));
     }
 }
 
@@ -213,7 +324,6 @@ max31856_start_drdy_pin_task (uint32_t drdy_pin,
 {
   esp_err_t ret;
   BaseType_t task_ret;
-  uint8_t *r;
 
   // Configure the pin
   gpio_config_t io_conf = {};
@@ -235,7 +345,7 @@ max31856_start_drdy_pin_task (uint32_t drdy_pin,
     }
 
   // start gpio task
-  task_ret = xTaskCreate (read_temperature_task, "read_temperature_task", 2048,
+  task_ret = xTaskCreate (read_temperature_task, "read_temperature_task", 1800,
                           (void *)spi_handle, 10, NULL);
   if (task_ret == pdPASS)
     {
